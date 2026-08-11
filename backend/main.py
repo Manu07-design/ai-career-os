@@ -22,7 +22,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "https://ai-career-os-2.onrender.com",
+        "https://ai-career-os-2.onrender.com"
+        "https://ai-career-2j4jhqiaz-manus-projects-696460a1.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
