@@ -2,7 +2,7 @@ import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import "./App.css";
 
-const API = "http://127.0.0.1:8000";
+const API = "https://ai-career-os-2.onrender.com";
 
 function App() {
   const [file, setFile] = useState(null);
