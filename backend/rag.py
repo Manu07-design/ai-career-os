@@ -1,19 +1,16 @@
 import faiss
 import numpy as np
 
-from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 
 # --------------------------------------------------
-# EMBEDDING MODEL
+# RESUME KNOWLEDGE STORAGE
 # --------------------------------------------------
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
-
-
-# These will temporarily store our resume knowledge
 chunks = []
 index = None
+vectorizer = None
 
 
 # --------------------------------------------------
@@ -21,6 +18,16 @@ index = None
 # --------------------------------------------------
 
 def chunk_text(text, chunk_size=500, overlap=100):
+    """
+    Split resume text into overlapping chunks.
+
+    Example:
+        chunk 1 -> characters 0-500
+        chunk 2 -> characters 400-900
+        chunk 3 -> characters 800-1300
+
+    The overlap helps preserve context between chunks.
+    """
 
     text = text.strip()
 
@@ -30,16 +37,18 @@ def chunk_text(text, chunk_size=500, overlap=100):
     text_chunks = []
 
     start = 0
+    step = chunk_size - overlap
 
     while start < len(text):
 
         end = start + chunk_size
 
-        chunk = text[start:end]
+        chunk = text[start:end].strip()
 
-        text_chunks.append(chunk)
+        if chunk:
+            text_chunks.append(chunk)
 
-        start += chunk_size - overlap
+        start += step
 
     return text_chunks
 
@@ -52,43 +61,58 @@ def build_vector_store(text):
 
     global chunks
     global index
+    global vectorizer
 
-    # Step 1: Split resume
+    # Step 1: Split resume into chunks
     chunks = chunk_text(text)
 
     if not chunks:
-        raise ValueError("Cannot build vector store from empty text.")
+        raise ValueError(
+            "Cannot build vector store from empty text."
+        )
 
-    # Step 2: Convert chunks into embeddings
-    embeddings = model.encode(
-        chunks,
-        convert_to_numpy=True,
-        normalize_embeddings=True
+    # Step 2: Create TF-IDF vectorizer
+    vectorizer = TfidfVectorizer(
+        lowercase=True,
+        stop_words="english"
     )
 
-    embeddings = np.asarray(
-        embeddings,
-        dtype="float32"
-    )
+    # Step 3: Convert chunks into vectors
+    embeddings = vectorizer.fit_transform(chunks)
 
-    # Step 3: Determine embedding dimension
+    # Convert sparse matrix to dense float32
+    embeddings = embeddings.toarray().astype("float32")
+
+    # --------------------------------------------------
+    # Normalize vectors
+    # --------------------------------------------------
+
+    faiss.normalize_L2(embeddings)
+
+    # --------------------------------------------------
+    # Create FAISS index
+    # --------------------------------------------------
+
     dimension = embeddings.shape[1]
 
-    # Step 4: Create FAISS index
     index = faiss.IndexFlatIP(dimension)
 
-    # Step 5: Store vectors
+    # --------------------------------------------------
+    # Store vectors
+    # --------------------------------------------------
+
     index.add(embeddings)
 
     return {
         "chunks": len(chunks),
         "embedding_dimension": dimension,
-        "vectors_stored": index.ntotal
+        "vectors_stored": index.ntotal,
+        "embedding_model": "TF-IDF"
     }
 
 
 # --------------------------------------------------
-# SEMANTIC RETRIEVAL
+# RETRIEVAL
 # --------------------------------------------------
 
 def retrieve_chunks(query, top_k=3):
@@ -98,26 +122,46 @@ def retrieve_chunks(query, top_k=3):
             "Vector store has not been created yet."
         )
 
-    # Convert question into embedding
-    query_embedding = model.encode(
-        [query],
-        convert_to_numpy=True,
-        normalize_embeddings=True
+    if vectorizer is None:
+        raise ValueError(
+            "Vectorizer has not been created yet."
+        )
+
+    # --------------------------------------------------
+    # Convert query into vector
+    # --------------------------------------------------
+
+    query_embedding = vectorizer.transform(
+        [query]
     )
 
-    query_embedding = np.asarray(
-        query_embedding,
-        dtype="float32"
+    query_embedding = (
+        query_embedding
+        .toarray()
+        .astype("float32")
     )
 
-    # Don't request more chunks than we have
+    # Normalize query vector
+    faiss.normalize_L2(query_embedding)
+
+    # --------------------------------------------------
+    # Don't request more chunks than available
+    # --------------------------------------------------
+
     k = min(top_k, len(chunks))
 
+    # --------------------------------------------------
     # Search FAISS
+    # --------------------------------------------------
+
     scores, indices = index.search(
         query_embedding,
         k
     )
+
+    # --------------------------------------------------
+    # Build results
+    # --------------------------------------------------
 
     results = []
 
@@ -125,6 +169,10 @@ def retrieve_chunks(query, top_k=3):
         scores[0],
         indices[0]
     ):
+
+        # Ignore invalid FAISS index
+        if int(chunk_index) < 0:
+            continue
 
         results.append({
             "chunk": chunks[int(chunk_index)],
